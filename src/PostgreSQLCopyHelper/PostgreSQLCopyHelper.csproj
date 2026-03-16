@@ -1,11 +1,32 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
-  <PropertyGroup>
-    <TargetFrameworks>net10.0</TargetFrameworks>
-  </PropertyGroup>
+    <PropertyGroup>
+        <TargetFrameworks>net10.0</TargetFrameworks>
+    </PropertyGroup>
 
-  <ItemGroup>
-    <PackageReference Include="Npgsql" Version="10.0.2" />
-  </ItemGroup>
+    <ItemGroup>
+        <PackageReference Include="Npgsql" Version="10.0.2" />
+    </ItemGroup>
 
+    <PropertyGroup>
+        <!-- NuGet Package Metadata -->
+        <PackageId>PostgreSQLCopyHelper</PackageId>
+        <Version>3.0.0</Version>
+        <Authors>Philipp Wagner</Authors>
+        <Company>bytefish</Company>
+        <Description>A high-performance .NET library for Bulk Inserts to PostgreSQL using the Binary COPY Protocol.</Description>
+        <PackageTags>postgresql;postgres;npgsql;bulk;insert;copy;database;data</PackageTags>
+
+        <!-- URLs & Git Link -->
+        <PackageProjectUrl>https://github.com/bytefish/PostgreSQLCopyHelper</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/bytefish/PostgreSQLCopyHelper.git</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+
+        <!-- Show Readme in NuGet Portal -->
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+
+        <!-- Generate Package on build -->
+        <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    </PropertyGroup>
 </Project>

@@ -1,275 +1,137 @@
 # PostgreSQLCopyHelper #
 
-[![Build Status](https://dev.azure.com/PostgreSqlCopyHelper/PostgreSQLCopyHelper/_apis/build/status/postgresqlcopyhelper.PostgreSQLCopyHelper?branchName=master)](https://dev.azure.com/PostgreSqlCopyHelper/PostgreSQLCopyHelper/_build/latest?definitionId=1&branchName=master)
-[![stable](https://img.shields.io/nuget/v/PostgreSQLCopyHelper.svg?label=stable)](https://www.nuget.org/packages/PostgreSQLCopyHelper/)
-[![prerelease](https://img.shields.io/nuget/vpre/PostgreSQLCopyHelper.svg?label=prerelease)](https://www.nuget.org/packages/PostgreSQLCopyHelper/)
+PostgreSQLCopyHelper is a high-performance .NET library for Bulk Inserts to PostgreSQL using the Binary COPY Protocol.
 
-PostgreSQLCopyHelper is a library for efficient bulk inserts to PostgreSQL databases. It wraps the COPY methods from [Npgsql](https://github.com/npgsql/npgsql) behind a nice Fluent API.
+It provides an elegant, highly optimized wrapper around the PostgreSQL COPY command:
 
-## Installing ##
+> The COPY command is a PostgreSQL specific feature, which allows efficient bulk import or export of
+> data to and from a table. This is a much faster way of getting data in and out of a table than using
+> `INSERT` and `SELECT`.
 
-To install PostgreSQLCopyHelper, run the following command in the Package Manager Console:
+This project wouldn't be possible without the great Npgsql library, which handles the underlying Postgres wire protocol.
 
+## Setup ##
+
+PostgreSQLCopyHelper is available on NuGet.
+
+You can add the following dependency to your .csproj to include it in your project:
+
+```xml
+<PackageReference Include="PostgreSQLCopyHelper" Version="3.0.0" />
 ```
-PM> Install-Package PostgreSQLCopyHelper
-```
 
-## Basic Usage ##
+## PostgreSQLCopyHelper 3.0.0 ###
 
-Imagine we have the following table we want to copy data to:
+The newest major release of PostgreSQLCopyHelper comes with a completely redesigned API.
 
-```sql
-CREATE TABLE sample.unit_test
-(
-	col_smallint smallint,
-	col_integer integer,
-	col_money money,
-	col_bigint bigint,
-	col_timestamp timestamp,
-	col_real real,
-	col_double double precision,
-	col_bytea bytea,
-	col_uuid uuid,
-	col_numeric numeric,
-	col_inet inet,
-	col_macaddr macaddr,
-	col_date date,
-	col_interval interval
+The new API strictly separates the **What** (Structure and Mapping) from the **How** (Execution and I/O). It flips 
+the mental model by having a Database-first API, which solves a lot of problem with the previous API and allows for 
+composing complex types more easily. 
+
+## Quick Start ##
+
+### 1. Define your Data Model ###
+
+The library works perfectly with modern C# record types, structs, or traditional classes.
+
+```csharp
+public record UserSession(
+    Guid Id,
+    string? UserAgent,   // Nullable Reference Type
+    DateTime CreatedAt,  // Precise Timestamp
+    int[] Tags,          // Array
+    NpgsqlRange<int> ActiveRange // Native Range Support
 );
 ```
 
-The corresponding domain model in our application could look like this:
+### 2. Define your Mapping (Stateless & Thread-Safe) ###
+
+The `PgMapper<T>` is the heart of the library. It is completely stateless after configuration and should be 
+instantiated only once (e.g., as a `static readonly` field or Singleton).
 
 ```csharp
-private class TestEntity
+private static readonly PgMapper<UserSession> SessionMapper = 
+    new PgMapper<UserSession>("public", "user_sessions")
+        .Map("id", PostgresTypes.Uuid, x => x.Id)
+                
+        // SAFE STRINGS: Strips invalid \u0000 characters to prevent pipeline crashes
+        .Map("user_agent", PostgresTypes.Text.NullCharacterHandling(""), x => x.UserAgent)
+        
+        // TIME TYPES: Native support for Npgsql's DateTime semantics
+        .Map("created_at", PostgresTypes.TimestampTz, x => x.CreatedAt)
+        
+        // ARRAYS: Compose base types natively
+        .Map("tags", PostgresTypes.Array(PostgresTypes.Integer), x => x.Tags)
+
+        // RANGES: Native Postgres range types
+        .Map("active_range", PostgresTypes.IntegerRange, x => x.ActiveRange);
+```
+
+### 3. Execute the Bulk Insert ###
+
+The `PgBulkWriter<T>` is a lightweight, transient executor that takes your mapper and streams the data to the 
+database using `ValueTask` and asynchronous I/O.
+
+```csharp
+public async Task SaveSessionsAsync(NpgsqlConnection conn, List<UserSession> sessionList)
 {
-	public Int16? SmallInt { get; set; }
-	public Int32? Integer { get; set; }
-	public Int64? BigInt { get; set; }
-	public Decimal? Money { get; set; }
-	public DateTime? Timestamp { get; set; }
-	public Decimal? Numeric { get; set; }
-	public Single? Real { get; set; }
-	public Double? DoublePrecision { get; set; }
-	public byte[] ByteArray { get; set; }
-	public Guid? UUID { get; set; }
-	public IPAddress IpAddress { get; set; }
-	public PhysicalAddress MacAddress { get; set; }
-	public DateTime? Date { get; set; }
-	public TimeSpan? TimeSpan { get; set; }
+    var writer = new PgBulkWriter<UserSession>(SessionMapper);
+    
+    ulong insertedCount = await writer.SaveAllAsync(conn, sessionList);
+    Console.WriteLine($"Successfully inserted {insertedCount} sessions.");
 }
 ```
 
-The PostgreSQLCopyHelper now defines the mapping between domain model and the database table:
+## Streaming and Lazy Evaluation ##
+
+One of the key strengths of the `SaveAllAsync` method is that it accepts an `IEnumerable<T>`. This means you 
+are never forced to load your entire dataset into memory.
+
+If you are yielding data from a stream, a file parser, or another database, the writer will pull the data lazily:
 
 ```csharp
-var copyHelper = new PostgreSQLCopyHelper<TestEntity>("sample", "unit_test")
-	.MapSmallInt("col_smallint", x => x.SmallInt)
-	.MapInteger("col_integer", x => x.Integer)
-	.MapMoney("col_money", x => x.Money)
-	.MapBigInt("col_bigint", x => x.BigInt)
-	.MapTimeStamp("col_timestamp", x => x.Timestamp)
-	.MapReal("col_real", x => x.Real)
-	.MapDouble("col_double", x => x.DoublePrecision)
-	.MapByteArray("col_bytea", x => x.ByteArray)
-	.MapUUID("col_uuid", x => x.UUID)
-	.MapInetAddress("col_inet", x => x.IpAddress)
-	.MapMacAddress("col_macaddr", x => x.MacAddress)
-	.MapDate("col_date", x => x.Date)
-	.MapInterval("col_interval", x => x.TimeSpan)
-	.MapNumeric("col_numeric", x => x.Numeric);
+IEnumerable<UserSession> massiveDataStream = ReadMassiveDataFromCsv();
+
+// Data is streamed directly to PostgreSQL on-the-fly. Memory consumption remains flat.
+await writer.SaveAllAsync(connection, massiveDataStream);
 ```
 
-And then we can use it to efficiently store the data:
+## Mastering the Fluent API ##
 
-Synchronously:
+The API is designed around `PostgresTypes`. This class serves as your single entry point for all PostgreSQL data types.
+
+When you map a property, the compiler automatically detects if your `struct` is nullable (`int?`) or non-nullable (`int`):
 
 ```csharp
-private ulong WriteToDatabase(PostgreSQLCopyHelper<TestEntity> copyHelper, IEnumerable<TestEntity> entities)
-{
-    using (var connection = new NpgsqlConnection("Server=127.0.0.1;Port=5432;Database=sampledb;User Id=philipp;Password=test_pwd;"))
-    {
-        connection.Open();
+// The compiler routes this to the high-performance, non-allocating path
+.Map("mandatory_id", PostgresTypes.Integer, x => x.Id) // Id is 'int'
 
-        // Returns count of rows written 
-        return copyHelper.SaveAll(connection, entities);
-    }
-}
+// The compiler routes this to the null-safe path automatically!
+.Map("optional_bonus", PostgresTypes.Integer, x => x.Bonus) // Bonus is 'int?'
 ```
 
-Or asynchronously:
+## Advanced Type Mapping ##
+
+### Arrays and Lists ###
+
+You can compose any base type into an array or list using the Array() or List() composition functions:
 
 ```csharp
-private async Task<ulong> WriteToDatabaseAsync(PostgreSQLCopyHelper<TestEntity> copyHelper, IEnumerable<TestEntity> entities, CancellationToken cancellationToken = default)
-{
-    using (var connection = new NpgsqlConnection("Server=127.0.0.1;Port=5432;Database=sampledb;User Id=philipp;Password=test_pwd;"))
-    {
-        await connection.OpenAsync(cancellationToken);
+// Maps a C# List<string> to a Postgres text[]
+.Map("nicknames", PostgresTypes.List(PostgresTypes.Text), x => x.Nicknames)
 
-        // Returns count of rows written 
-        return await copyHelper.SaveAllAsync(connection, entities, cancellationToken);
-    }
-}
+// Maps a C# int[] to a Postgres int4[]
+.Map("scores", PostgresTypes.Array(PostgresTypes.Integer), x => x.Scores)
 ```
 
-Or asynchronously with asynchronous enumerables:
+### Ranges ###
+
+PostgreSQL's powerful range types are fully supported via `NpgsqlRange<T>`:
 
 ```csharp
-private async Task<ulong> WriteToDatabaseAsync(PostgreSQLCopyHelper<TestEntity> copyHelper, IAsyncEnumerable<TestEntity> entities, CancellationToken cancellationToken = default)
-{
-    using (var connection = new NpgsqlConnection("Server=127.0.0.1;Port=5432;Database=sampledb;User Id=philipp;Password=test_pwd;"))
-    {
-        await connection.OpenAsync(cancellationToken);
+// Using predefined common ranges
+.Map("age_limit", PostgresTypes.IntegerRange, x => x.AgeRange)
 
-        // Returns count of rows written 
-        return await copyHelper.SaveAllAsync(connection, entities, cancellationToken);
-    }
-}
+// Composing custom ranges dynamically (e.g. for custom PostgreSql Range Types)
+.Map("custom_range", PostgresTypes.Range(PostgresTypes.DoublePrecision), x => x.CustomRange)
 ```
-
-## PostgreSQLCopyHelper Custom Type Maps ##
-
-One can always define a custom map function for any property to any `Npgsql` type.
-
-For example:
-
-```csharp
-.Map("geo", x => x.geo, NpgsqlDbType.Point)
-```
-
-## Mapping Composite Types ##
-
-Imagine you have a composite type called ``person_type`` in a schema of your database:
-
-```sql
-create type sample.person_type as
-(
-    first_name text,
-    last_name text,
-    birth_date date
-);
-```
-
-And it is used in a table called ``CompositeTest``:
-
-```sql
-create table sample.CompositeTest
-(
-    col_text text,
-    col_person sample.person_type                
-)
-```
-
-You first need to map the Postgres ``person_type`` to a C\# class:
-
-```csharp
-private class PersonType
-{
-    public string FirstName { get; set; }
-
-    public string LastName { get; set; }
-
-    public DateTime BirthDate { get; set; }
-}
-```
-
-A hint: Npgsql always converts the property name to a snake case column name, so ``FirstName`` is mapped 
-to ``first_name`` by convention. You can use the ``[PgName]`` attribute to explicitly set the Postgres type 
-name.
-
-Next the table is mapped to the following C\# model:
-
-```csharp
-private class SampleEntity
-{
-    public string TextColumn { get; set; }
-
-    public PersonType CompositeTypeColumn { get; set; }
-}
-```
-
-And now we can bulk write ``SampleEntity`` instances using PostgreSQLCopyHelper like this:
-
-```csharp
-connection.TypeMapper.MapComposite<PersonType>("sample.person_type");
-
-// ... alternatively you can set it globally at any place in your application using the NpgsqlConnection.GlobalTypeMapper:
-//
-// NpgsqlConnection.GlobalTypeMapper.MapComposite<PersonType>("sample.person_type");
-
-var subject = new PostgreSQLCopyHelper<SampleEntity>("sample", "CompositeTest")
-         .MapText("col_text", x => x.TextColumn)
-         .Map("col_person", x => x.CompositeTypeColumn);
-
-var entities = new List<SampleEntity>();
-
-entities.Add(new SampleEntity
-{
-    TextColumn = "0",
-    CompositeTypeColumn = new PersonType { FirstName = "Fake", LastName = "Fakerton", BirthDate = new DateTime(1987, 1, 11) }
-});
-
-entities.Add(new SampleEntity
-{
-    TextColumn = "1",
-    CompositeTypeColumn = new PersonType { FirstName = "Philipp", LastName = "Wagner", BirthDate = new DateTime(1912, 1, 11) }
-});
-
-subject.SaveAll(connection, entities);
-
-```
-
-In the listing you see, that we need to tell Npgsql how to map the Postgres type using ``MapComposite<>``. This can 
-be done per Connection like this:
-
-```
-connection.TypeMapper.MapComposite<PersonType>("sample.person_type");
-```
-
-Or you can alternatively set the Mapping globally at any place in your application using the ``NpgsqlConnection.GlobalTypeMapper``:
-
-```
-NpgsqlConnection.GlobalTypeMapper.MapComposite<PersonType>("sample.person_type");
-```
-
-## PostgreSQLCopyHelper.NodaTime: NodaTime Support ##
-
-The [PostgreSQLCopyHelper.NodaTime](https://www.nuget.org/packages/PostgreSQLCopyHelper.NodaTime/) package extends PostgreSQLCopyHelper for [NodaTime](https://nodatime.org/) types. 
-
-To install `PostgreSQLCopyHelper.NodaTime`, run the following command in the Package Manager Console:
-
-```
-PM> Install-Package PostgreSQLCopyHelper
-```
-
-It uses the [Npgsql.NodaTime plugin](https://www.npgsql.org/doc/types/nodatime.html), which needs to be enabled by running:
-
-```csharp
-using Npgsql;
-
-// Place this at the beginning of your program to use NodaTime everywhere (recommended)
-NpgsqlConnection.GlobalTypeMapper.UseNodaTime();
-
-// Or to temporarily use NodaTime on a single connection only:
-conn.TypeMapper.UseNodaTime();
-```
-
-For more details see the [Npgsql documentation for NodaTime](https://www.npgsql.org/doc/types/nodatime.html).
-
-## Case-Sensitive Identifiers ##
-
-By default the library does not apply quotes to identifiers, such as Table Names and Column Names. If you want PostgreSQL-conform quoting for identifiers, 
-then use the ``UsePostgresQuoting`` method like this:
-
-```csharp
-var copyHelper = new PostgreSQLCopyHelper<MixedCaseEntity>("sample", "MixedCaseEntity")
-                     .UsePostgresQuoting()
-                     .MapInteger("Property_One", x => x.Property_One)
-                     .MapText("Property_Two", x => x.Property_Two);
-```
-
-## License ##
-
-PostgreSQLCopyHelper is licensed under the MIT License. See [LICENSE](LICENSE) for details.
-
-Copyright (c) Philipp Wagner, Steven Yeh and [Contributors](https://github.com/PostgreSQLCopyHelper/PostgreSQLCopyHelper/graphs/contributors)
