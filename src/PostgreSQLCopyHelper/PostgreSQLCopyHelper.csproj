@@ -1,19 +1,37 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
-  <PropertyGroup>
-    <TargetFrameworks>net461;netstandard2.0;netstandard2.1</TargetFrameworks>
-  </PropertyGroup>
+    <PropertyGroup>
+        <TargetFrameworks>net10.0</TargetFrameworks>
+    </PropertyGroup>
 
-  <ItemGroup>
-    <PackageReference Include="Microsoft.SourceLink.GitHub">
-      <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-    </PackageReference>
-    <PackageReference Include="Npgsql" />
-  </ItemGroup>
+    <ItemGroup>
+        <PackageReference Include="Npgsql" Version="10.0.2" />
+    </ItemGroup>
 
-  <ItemGroup Condition=" '$(TargetFramework)' == 'net461' OR '$(TargetFramework)' == 'netstandard2.0' ">
-    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" />
-  </ItemGroup>
+    <PropertyGroup>
+        <!-- NuGet Package Metadata -->
+        <PackageId>PostgreSQLCopyHelper</PackageId>
+        <Version>3.0.0</Version>
+        <Authors>Philipp Wagner</Authors>
+        <Company>bytefish</Company>
+        <Description>A high-performance .NET library for Bulk Inserts to PostgreSQL using the Binary COPY Protocol.</Description>
+        <PackageTags>postgresql;postgres;npgsql;bulk;insert;copy;database;data</PackageTags>
+
+        <!-- URLs & Git Link -->
+        <PackageProjectUrl>https://github.com/bytefish/PostgreSQLCopyHelper</PackageProjectUrl>
+        <RepositoryUrl>https://github.com/bytefish/PostgreSQLCopyHelper.git</RepositoryUrl>
+        <RepositoryType>git</RepositoryType>
+
+        <!-- Show Readme in NuGet Portal -->
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
+
+        <!-- Generate Package on build -->
+        <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    </ItemGroup>
 
 </Project>

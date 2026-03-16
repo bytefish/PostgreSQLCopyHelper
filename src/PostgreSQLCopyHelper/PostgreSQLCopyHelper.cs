@@ -1,197 +1,255 @@
-﻿// Licensed under the MIT license. See LICENSE file in the project root for full license information.
-
-using System;
+﻿using System;
 using System.Collections.Generic;
-using System.Linq;
+using System.Net;
+using System.Net.NetworkInformation;
 using System.Threading;
 using System.Threading.Tasks;
 using Npgsql;
 using NpgsqlTypes;
-using PostgreSQLCopyHelper.Model;
-using PostgreSQLCopyHelper.Utils;
 
-namespace PostgreSQLCopyHelper
+namespace PostgreSQLCopyHelper;
+
+/// <summary>
+/// The delegate that defines how to write a single column for a given entity using the NpgsqlBinaryImporter.
+/// </summary>
+public delegate ValueTask PgColumnWriter<TEntity>(
+    NpgsqlBinaryImporter writer,
+    TEntity entity,
+    CancellationToken cancellationToken);
+
+/// <summary>
+/// A PgType is a simple wrapper around NpgsqlDbType that provides a convenient way to 
+/// create column writers for specific types.
+/// </summary>
+public class PgType<TValue>
 {
-    public class PostgreSQLCopyHelper<TEntity> : IPostgreSQLCopyHelper<TEntity>
+    public NpgsqlDbType DbType { get; }
+
+    public PgType(NpgsqlDbType dbType)
     {
-        private bool _usePostgresQuoting;
+        DbType = dbType;
+    }
 
-        private readonly TableDefinition _table;
-
-        private readonly List<ColumnDefinition<TEntity>> _columns;
-
-        public PostgreSQLCopyHelper(string tableName)
-            : this(string.Empty, tableName)
+    public virtual PgColumnWriter<TEntity> From<TEntity>(Func<TEntity, TValue> extractor)
+    {
+        return (writer, entity, ct) =>
         {
-        }
+            TValue value = extractor(entity);
 
-        public PostgreSQLCopyHelper(string schemaName, string tableName)
-        {
-            _usePostgresQuoting = false;
-
-            _table = new TableDefinition
+            if (value is null)
             {
-                Schema = schemaName,
-                TableName = tableName
-            };
+                return new ValueTask(writer.WriteNullAsync(ct));
+            }
 
-            _columns = new List<ColumnDefinition<TEntity>>();
-        }
+            return new ValueTask(writer.WriteAsync(value, DbType, ct));
+        };
+    }
+}
 
-        public TargetTable TargetTable
+public static class PgTypeExtensions
+{
+    public static PgColumnWriter<TEntity> From<TEntity, TValue>(
+        this PgType<TValue> pgType,
+        Func<TEntity, TValue?> extractor) where TValue : struct
+    {
+        return async (writer, entity, ct) =>
         {
-            get
+            TValue? value = extractor(entity);
+            if (value.HasValue)
             {
-                return new TargetTable
-                {
-                    SchemaName = _table.Schema,
-                    TableName = _table.TableName,
-                    UsePostgresQuoting = _usePostgresQuoting,
-                    Columns = _columns
-                        .Select(x => new TargetColumn { ColumnName = x.ColumnName, DbType = x.DbType, ClrType = x.ClrType, DataTypeName = x.DataTypeName })
-                        .ToList()
-                };
+                await writer.WriteAsync(value.Value, pgType.DbType, ct).ConfigureAwait(false);
+            }
+            else
+            {
+                await writer.WriteNullAsync(ct).ConfigureAwait(false);
+            }
+        };
+    }
+
+    public static PgType<string> NullCharacterHandling(this PgType<string> pgType, string replacement = "")
+    {
+        return new SanitizedPgString(pgType.DbType, replacement);
+    }
+}
+
+internal class SanitizedPgString : PgType<string>
+{
+    private readonly string _replacement;
+
+    public SanitizedPgString(NpgsqlDbType dbType, string replacement) : base(dbType)
+    {
+        _replacement = replacement;
+    }
+
+    public override PgColumnWriter<TEntity> From<TEntity>(Func<TEntity, string> extractor)
+    {
+        return (writer, entity, ct) =>
+        {
+            string value = extractor(entity);
+
+            if (value is null)
+            {
+                return new ValueTask(writer.WriteNullAsync(ct));
+            }
+
+            if (value.Contains('\0'))
+            {
+                value = value.Replace("\0", _replacement);
+            }
+
+            return new ValueTask(writer.WriteAsync(value, DbType, ct));
+        };
+    }
+}
+
+public static class PostgresTypes
+{
+    // Numeric types
+    public static readonly PgType<short> Smallint = new(NpgsqlDbType.Smallint);
+    public static readonly PgType<int> Integer = new(NpgsqlDbType.Integer);
+    public static readonly PgType<long> Bigint = new(NpgsqlDbType.Bigint);
+    public static readonly PgType<float> Real = new(NpgsqlDbType.Real);
+    public static readonly PgType<double> DoublePrecision = new(NpgsqlDbType.Double);
+    public static readonly PgType<decimal> Numeric = new(NpgsqlDbType.Numeric);
+    public static readonly PgType<decimal> Money = new(NpgsqlDbType.Money);
+
+    // Text & String types (Absolutely pure PgType instances)
+    public static readonly PgType<string> Text = new(NpgsqlDbType.Text);
+    public static readonly PgType<string> Varchar = new(NpgsqlDbType.Varchar);
+    public static readonly PgType<string> Char = new(NpgsqlDbType.Char);
+    public static readonly PgType<string> Jsonb = new(NpgsqlDbType.Jsonb);
+    public static readonly PgType<string> Json = new(NpgsqlDbType.Json);
+
+    // Date & Time
+    public static readonly PgType<DateTime> Timestamp = new(NpgsqlDbType.Timestamp);
+    public static readonly PgType<DateTime> TimestampTz = new(NpgsqlDbType.TimestampTz);
+    public static readonly PgType<DateOnly> Date = new(NpgsqlDbType.Date);
+    public static readonly PgType<TimeOnly> Time = new(NpgsqlDbType.Time);
+
+    // Miscellaneous
+    public static readonly PgType<bool> Boolean = new(NpgsqlDbType.Boolean);
+    public static readonly PgType<byte[]> Bytea = new(NpgsqlDbType.Bytea);
+    public static readonly PgType<Guid> Uuid = new(NpgsqlDbType.Uuid);
+
+    // Network types
+    public static readonly PgType<IPAddress> Inet = new(NpgsqlDbType.Inet);
+    public static readonly PgType<PhysicalAddress> MacAddr = new(NpgsqlDbType.MacAddr);
+
+    // Ranges
+    public static readonly PgType<NpgsqlRange<int>> IntegerRange = new(NpgsqlDbType.IntegerRange);
+    public static readonly PgType<NpgsqlRange<long>> BigintRange = new(NpgsqlDbType.BigIntRange);
+    public static readonly PgType<NpgsqlRange<decimal>> NumericRange = new(NpgsqlDbType.NumericRange);
+    public static readonly PgType<NpgsqlRange<DateTime>> TimestampRange = new(NpgsqlDbType.TimestampRange);
+    public static readonly PgType<NpgsqlRange<DateTime>> TimestampTzRange = new(NpgsqlDbType.TimestampTzRange);
+    public static readonly PgType<NpgsqlRange<DateOnly>> DateRange = new(NpgsqlDbType.DateRange);
+
+    public static PgType<NpgsqlRange<T>> Range<T>(PgType<T> baseType)
+    {
+        return new PgType<NpgsqlRange<T>>(baseType.DbType | NpgsqlDbType.Range);
+    }
+
+    public static PgType<T[]> Array<T>(PgType<T> baseType)
+    {
+        return new PgType<T[]>(baseType.DbType | NpgsqlDbType.Array);
+    }
+
+    public static PgType<List<T>> List<T>(PgType<T> baseType)
+    {
+        return new PgType<List<T>>(baseType.DbType | NpgsqlDbType.Array);
+    }
+}
+
+/// <summary>
+/// The PgMapper is the central class that defines the mapping between a C# entity and a PostgreSQL table.
+/// </summary>
+public class PgMapper<TEntity>
+{
+    private readonly string _tableName;
+    private readonly List<string> _columns = new();
+
+    private readonly List<PgColumnWriter<TEntity>> _writers = new();
+
+    public PgMapper(string schemaName, string tableName)
+    {
+        _tableName = $"\"{schemaName}\".\"{tableName}\"";
+    }
+
+    public PgMapper<TEntity> Map(string columnName, PgColumnWriter<TEntity> columnAction)
+    {
+        _columns.Add($"\"{columnName}\"");
+        _writers.Add(columnAction);
+
+        return this;
+    }
+
+    public PgMapper<TEntity> Map<TValue>(
+        string columnName,
+        PgType<TValue> type,
+        Func<TEntity, TValue> extractor)
+    {
+        return Map(columnName, type.From(extractor));
+    }
+
+    public PgMapper<TEntity> Map<TValue>(
+        string columnName,
+        PgType<TValue> type,
+        Func<TEntity, TValue?> extractor) where TValue : struct
+    {
+        return Map(columnName, type.From(extractor));
+    }
+
+    internal string GetCopyCommand()
+    {
+        string columnsSql = string.Join(", ", _columns);
+
+        return $"COPY {_tableName} ({columnsSql}) FROM STDIN BINARY";
+    }
+
+    internal IReadOnlyList<PgColumnWriter<TEntity>> GetWriters()
+    {
+        return _writers;
+    }
+}
+
+/// <summary>
+/// The PgBulkWriter is responsible for executing the bulk insert operation using the NpgsqlBinaryImporter 
+/// based on the mapping defined in the PgMapper. It takes care of iterating over the entities and invoking 
+/// the appropriate column writers for each entity.
+/// </summary>
+/// <typeparam name="TEntity"></typeparam>
+public class PgBulkWriter<TEntity>
+{
+    private readonly PgMapper<TEntity> _mapper;
+
+    public PgBulkWriter(PgMapper<TEntity> mapper)
+    {
+        _mapper = mapper;
+    }
+
+    public async Task<ulong> SaveAllAsync(
+        NpgsqlConnection connection,
+        IEnumerable<TEntity> entities,
+        CancellationToken cancellationToken = default)
+    {
+        string copyCommand = _mapper.GetCopyCommand();
+        IReadOnlyList<PgColumnWriter<TEntity>> writers = _mapper.GetWriters();
+
+        await using NpgsqlBinaryImporter importer = await connection
+            .BeginBinaryImportAsync(copyCommand, cancellationToken)
+            .ConfigureAwait(false);
+
+        foreach (TEntity entity in entities)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            await importer.StartRowAsync(cancellationToken).ConfigureAwait(false);
+            
+            foreach (PgColumnWriter<TEntity> columnWriter in writers)
+            {
+                await columnWriter(importer, entity, cancellationToken).ConfigureAwait(false);
             }
         }
 
-        public ulong SaveAll(NpgsqlConnection connection, IEnumerable<TEntity> entities)
-        {
-            using (NoSynchronizationContextScope.Enter())
-            {
-                return DoSaveAllAsync(connection, entities, CancellationToken.None).GetAwaiter().GetResult();
-            }
-        }
-
-        public ValueTask<ulong> SaveAllAsync(NpgsqlConnection connection, IEnumerable<TEntity> entities, CancellationToken cancellationToken = default)
-        {
-            if (cancellationToken.IsCancellationRequested)
-            {
-                return new ValueTask<ulong>(Task.FromCanceled<ulong>(cancellationToken));
-            }
-
-            using (NoSynchronizationContextScope.Enter())
-            {
-                return DoSaveAllAsync(connection, entities, cancellationToken);
-            }
-        }
-
-        public ValueTask<ulong> SaveAllAsync(NpgsqlConnection connection, IAsyncEnumerable<TEntity> entities, CancellationToken cancellationToken = default)
-        {
-            if (cancellationToken.IsCancellationRequested)
-            {
-                return new ValueTask<ulong>(Task.FromCanceled<ulong>(cancellationToken));
-            }
-
-            using (NoSynchronizationContextScope.Enter())
-            {
-                return DoSaveAllAsync(connection, entities, cancellationToken);
-            }
-        }
-
-        private async ValueTask<ulong> DoSaveAllAsync(NpgsqlConnection connection, IEnumerable<TEntity> entities, CancellationToken cancellationToken)
-        {
-            await using var binaryCopyWriter = connection.BeginBinaryImport(GetCopyCommand());
-            await WriteToStreamAsync(binaryCopyWriter, entities, cancellationToken);
-
-            return await binaryCopyWriter.CompleteAsync(cancellationToken);
-        }
-
-        private async ValueTask<ulong> DoSaveAllAsync(NpgsqlConnection connection, IAsyncEnumerable<TEntity> entities, CancellationToken cancellationToken)
-        {
-            await using var binaryCopyWriter = connection.BeginBinaryImport(GetCopyCommand());
-            await WriteToStreamAsync(binaryCopyWriter, entities, cancellationToken);
-
-            return await binaryCopyWriter.CompleteAsync(cancellationToken);
-        }
-
-        public PostgreSQLCopyHelper<TEntity> UsePostgresQuoting(bool enabled = true)
-        {
-            _usePostgresQuoting = enabled;
-
-            return this;
-        }
-
-        public PostgreSQLCopyHelper<TEntity> Map<TProperty>(string columnName, Func<TEntity, TProperty> propertyGetter)
-        {
-            return AddColumn(columnName, (writer, entity, cancellationToken) => writer.WriteAsync(propertyGetter(entity), cancellationToken), clrType: typeof(TProperty));
-        }
-
-
-        public PostgreSQLCopyHelper<TEntity> Map<TProperty>(string columnName, Func<TEntity, TProperty> propertyGetter, NpgsqlDbType dbType)
-        {
-            return AddColumn(columnName, (writer, entity, cancellationToken) => writer.WriteAsync(propertyGetter(entity), dbType, cancellationToken), dbType, typeof(TProperty));
-        }
-
-        public PostgreSQLCopyHelper<TEntity> Map<TProperty>(string columnName, Func<TEntity, TProperty> propertyGetter, string dataTypeName)
-        {
-            return AddColumn(columnName, (writer, entity, cancellationToken) => writer.WriteAsync(propertyGetter(entity), dataTypeName, cancellationToken), clrType: typeof(TProperty), dataTypeName: dataTypeName);
-        }
-
-        public PostgreSQLCopyHelper<TEntity> MapNullable<TProperty>(string columnName, Func<TEntity, TProperty?> propertyGetter, NpgsqlDbType dbType)
-            where TProperty : struct
-        {
-            return AddColumn(columnName, async (writer, entity, cancellationToken) =>
-            {
-                var val = propertyGetter(entity);
-
-                if (!val.HasValue)
-                {
-                    await writer.WriteNullAsync(cancellationToken);
-                }
-                else
-                {
-                    await writer.WriteAsync(val.Value, dbType, cancellationToken);
-                }
-            }, dbType, typeof(TProperty));
-        }
-
-        private async Task WriteToStreamAsync(NpgsqlBinaryImporter writer, IEnumerable<TEntity> entities, CancellationToken cancellationToken)
-        {
-            foreach (var entity in entities)
-            {
-                await WriteToStreamAsync(writer, entity, cancellationToken);
-            }
-        }
-
-        private async Task WriteToStreamAsync(NpgsqlBinaryImporter writer, IAsyncEnumerable<TEntity> entities, CancellationToken cancellationToken)
-        {
-            await foreach (var entity in entities.WithCancellation(cancellationToken))
-            {
-                await WriteToStreamAsync(writer, entity, cancellationToken);
-            }
-        }
-
-        private async Task WriteToStreamAsync(NpgsqlBinaryImporter writer, TEntity entity, CancellationToken cancellationToken)
-        {
-            await writer.StartRowAsync(cancellationToken);
-
-            foreach (var columnDefinition in _columns)
-            {
-                await columnDefinition.WriteAsync(writer, entity, cancellationToken);
-            }
-        }
-
-        private PostgreSQLCopyHelper<TEntity> AddColumn(string columnName, Func<NpgsqlBinaryImporter, TEntity, CancellationToken, Task> action, NpgsqlDbType? dbType = default, Type clrType = default, string dataTypeName = default)
-        {
-            _columns.Add(new ColumnDefinition<TEntity>
-            {
-                ColumnName = columnName,
-                DbType = dbType,
-                DataTypeName = dataTypeName,
-                ClrType = clrType,
-                WriteAsync = action
-            });
-
-            return this;
-        }
-
-        private string GetCopyCommand()
-        {
-            var commaSeparatedColumns = string.Join(", ", _columns.Select(x => x.ColumnName.GetIdentifier(_usePostgresQuoting)));
-
-            return $"COPY {_table.GetFullyQualifiedTableName(_usePostgresQuoting)}({commaSeparatedColumns}) FROM STDIN BINARY;";
-        }
-
-
+        return await importer.CompleteAsync(cancellationToken).ConfigureAwait(false);
     }
 }
