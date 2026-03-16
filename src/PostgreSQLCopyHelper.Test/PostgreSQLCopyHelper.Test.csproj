@@ -11,7 +11,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\PostgreSQLCopyHelper\PostgreSQLCopyHelper.csproj" />
+    <ProjectReference Include="..\PostgreSQLCopyHelper\PostgreSQLCopyHelper.csproj" />
   </ItemGroup>
 
 </Project>

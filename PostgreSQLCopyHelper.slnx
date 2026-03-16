@@ -1,4 +1,4 @@
 <Solution>
   <Project Path="src/PostgreSQLCopyHelper/PostgreSQLCopyHelper.csproj" />
-  <Project Path="test/PostgreSQLCopyHelper.Test/PostgreSQLCopyHelper.Test.csproj" />
+  <Project Path="src/PostgreSQLCopyHelper.Test/PostgreSQLCopyHelper.Test.csproj" />
 </Solution>
